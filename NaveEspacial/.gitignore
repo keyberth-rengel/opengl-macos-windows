@@ -1,0 +1,7 @@
+build/*
+build-clean/*
+!build/.gitkeep
+.vscode/*
+.venv/*
+.venv-glad/*
+*.DS_Store
