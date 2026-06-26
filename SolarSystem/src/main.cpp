@@ -63,6 +63,27 @@ struct CelestialBody {
   bool drawOrbit;
 };
 
+// Estado de camara
+// Se guarda separado para que el movimiento del observador no se mezcle con la
+// logica orbital. yaw y pitch controlan el angulo; distance controla el zoom.
+struct CameraState {
+  float yaw;
+  float pitch;
+  float distance;
+  glm::vec3 target;
+};
+
+// Estado de simulacion
+// Aqui viven los controles globales: tiempo acumulado, velocidad, pausa,
+// visibilidad de orbitas y el planeta que esta enfocado actualmente.
+struct SimulationState {
+  float timeValue;
+  float timeScale;
+  bool paused;
+  bool showOrbits;
+  int focusedBody;
+};
+
 int gWindowWidth = static_cast<int>(SCR_WIDTH);
 int gWindowHeight = static_cast<int>(SCR_HEIGHT);
 
@@ -79,6 +100,8 @@ void upload_mesh(Mesh &mesh);
 void upload_orbit_mesh(OrbitMesh &mesh);
 void destroy_mesh(Mesh &mesh);
 void destroy_orbit_mesh(OrbitMesh &mesh);
+glm::vec3 calculate_camera_position(const CameraState &camera);
+glm::vec3 extract_translation(const glm::mat4 &transform);
 void draw_mesh(const Mesh &mesh);
 void draw_orbit(const OrbitMesh &mesh);
 
@@ -167,26 +190,191 @@ int main() {
       {"Neptune", 0.70f, 22.4f, 0.18f, 0.78f, 28.0f, neptuneTexture, -1, true},
   };
 
-  const glm::vec3 cameraPos(0.0f, 9.0f, 36.0f);
   const glm::vec3 lightPos(0.0f, 0.0f, 0.0f);
   const glm::vec3 orbitColor(0.38f, 0.42f, 0.55f);
   std::vector<glm::mat4> anchors(bodies.size(), glm::mat4(1.0f));
+  std::vector<glm::vec3> bodyPositions(bodies.size(), glm::vec3(0.0f));
+  std::vector<int> focusBodies = {1, 2, 3, 5, 6, 7, 8, 9};
+
+  CameraState camera = {0.0f, glm::radians(14.0f), 37.11f, glm::vec3(0.0f)};
+  const CameraState defaultCamera = camera;
+  SimulationState simulation = {0.0f, 1.0f, false, true, -1};
+  const SimulationState defaultSimulation = simulation;
+
+  const float cameraOrbitSpeed = 1.25f;
+  const float cameraPitchSpeed = 0.95f;
+  const float cameraZoomSpeed = 16.0f;
+  const float minCameraDistance = 3.0f;
+  const float maxCameraDistance = 60.0f;
+  const float maxPitch = glm::radians(70.0f);
+  const float minPitch = glm::radians(-25.0f);
+  const float minTimeScale = 0.25f;
+  const float maxTimeScale = 5.0f;
+
+  bool pauseWasDown = false;
+  bool orbitWasDown = false;
+  bool resetWasDown = false;
+  bool slowerWasDown = false;
+  bool fasterWasDown = false;
+  bool originWasDown = false;
+  bool focusKeyWasDown[8] = {false};
+
+  float lastFrame = static_cast<float>(glfwGetTime());
+
+  auto key_down = [&](int key) {
+    return glfwGetKey(window, key) == GLFW_PRESS;
+  };
+
+  auto pressed_once = [&](int key, bool &wasDown) {
+    bool down = key_down(key);
+    bool once = down && !wasDown;
+    wasDown = down;
+    return once;
+  };
+
+  auto pressed_once_either = [&](int firstKey, int secondKey, bool &wasDown) {
+    bool down = key_down(firstKey) || key_down(secondKey);
+    bool once = down && !wasDown;
+    wasDown = down;
+    return once;
+  };
+
+  auto focus_distance_for_body = [&](int bodyIndex) {
+    float distance = bodies[bodyIndex].radius * 2.25f + 1.25f;
+    if (distance < minCameraDistance) {
+      distance = minCameraDistance;
+    }
+    if (distance > 9.0f) {
+      distance = 9.0f;
+    }
+    return distance;
+  };
 
   // Bucle principal
-  // En cada frame se recalcula el tiempo y se vuelve a dibujar la escena
-  // completa con las orbitas y rotaciones actualizadas.
+  // Este bloque ahora hace cuatro cosas en orden: leer input, actualizar el
+  // tiempo, recalcular posiciones orbitales y renderizar la escena completa.
   while (!glfwWindowShouldClose(window)) {
-    if (glfwGetKey(window, GLFW_KEY_ESCAPE) == GLFW_PRESS) {
+    if (key_down(GLFW_KEY_ESCAPE)) {
       glfwSetWindowShouldClose(window, GLFW_TRUE);
     }
 
-    float time = static_cast<float>(glfwGetTime());
+    float currentFrame = static_cast<float>(glfwGetTime());
+    float deltaTime = currentFrame - lastFrame;
+    lastFrame = currentFrame;
+
+    // Controles continuos de camara.
+    // A/D o flechas horizontales orbitan la vista; W/S o flechas verticales
+    // cambian la inclinacion. Q/E acercan o alejan la camara.
+    if (key_down(GLFW_KEY_A) || key_down(GLFW_KEY_LEFT)) {
+      camera.yaw -= cameraOrbitSpeed * deltaTime;
+    }
+    if (key_down(GLFW_KEY_D) || key_down(GLFW_KEY_RIGHT)) {
+      camera.yaw += cameraOrbitSpeed * deltaTime;
+    }
+    if (key_down(GLFW_KEY_W) || key_down(GLFW_KEY_UP)) {
+      camera.pitch += cameraPitchSpeed * deltaTime;
+    }
+    if (key_down(GLFW_KEY_S) || key_down(GLFW_KEY_DOWN)) {
+      camera.pitch -= cameraPitchSpeed * deltaTime;
+    }
+    if (key_down(GLFW_KEY_Q)) {
+      camera.distance -= cameraZoomSpeed * deltaTime;
+    }
+    if (key_down(GLFW_KEY_E)) {
+      camera.distance += cameraZoomSpeed * deltaTime;
+    }
+
+    if (camera.pitch > maxPitch) {
+      camera.pitch = maxPitch;
+    }
+    if (camera.pitch < minPitch) {
+      camera.pitch = minPitch;
+    }
+    if (camera.distance < minCameraDistance) {
+      camera.distance = minCameraDistance;
+    }
+    if (camera.distance > maxCameraDistance) {
+      camera.distance = maxCameraDistance;
+    }
+
+    // Controles por pulsacion unica.
+    // Space pausa el sistema, O oculta orbitas, R restablece la vista,
+    // +/- cambian la velocidad y 0-8 cambian el foco de la camara.
+    if (pressed_once(GLFW_KEY_SPACE, pauseWasDown)) {
+      simulation.paused = !simulation.paused;
+    }
+    if (pressed_once(GLFW_KEY_O, orbitWasDown)) {
+      simulation.showOrbits = !simulation.showOrbits;
+    }
+    if (pressed_once(GLFW_KEY_R, resetWasDown)) {
+      camera = defaultCamera;
+      simulation = defaultSimulation;
+    }
+    if (pressed_once_either(GLFW_KEY_MINUS, GLFW_KEY_KP_SUBTRACT,
+                            slowerWasDown)) {
+      simulation.timeScale -= 0.25f;
+      if (simulation.timeScale < minTimeScale) {
+        simulation.timeScale = minTimeScale;
+      }
+    }
+    if (pressed_once_either(GLFW_KEY_EQUAL, GLFW_KEY_KP_ADD, fasterWasDown)) {
+      simulation.timeScale += 0.25f;
+      if (simulation.timeScale > maxTimeScale) {
+        simulation.timeScale = maxTimeScale;
+      }
+    }
+    if (pressed_once(GLFW_KEY_0, originWasDown)) {
+      simulation.focusedBody = -1;
+      camera.distance = defaultCamera.distance;
+    }
+
+    for (std::size_t i = 0; i < focusBodies.size(); ++i) {
+      int key = GLFW_KEY_1 + static_cast<int>(i);
+      if (pressed_once(key, focusKeyWasDown[i])) {
+        simulation.focusedBody = focusBodies[i];
+        camera.distance = focus_distance_for_body(simulation.focusedBody);
+      }
+    }
+
+    if (!simulation.paused) {
+      simulation.timeValue += deltaTime * simulation.timeScale;
+    }
+
+    // Precalculo orbital.
+    // Primero se guardan las transformaciones base de cada cuerpo para
+    // reutilizar esa informacion tanto en el enfoque de camara como en el
+    // render.
+    for (std::size_t i = 0; i < bodies.size(); ++i) {
+      const CelestialBody &body = bodies[i];
+      glm::mat4 anchor =
+          body.parentIndex >= 0 ? anchors[body.parentIndex] : glm::mat4(1.0f);
+
+      if (body.orbitRadius > 0.0f) {
+        anchor = glm::rotate(anchor, simulation.timeValue * body.orbitSpeed,
+                             glm::vec3(0.0f, 1.0f, 0.0f));
+        anchor =
+            glm::translate(anchor, glm::vec3(body.orbitRadius, 0.0f, 0.0f));
+      }
+
+      anchors[i] = anchor;
+      bodyPositions[i] = extract_translation(anchor);
+    }
+
+    // Si hay un planeta enfocado, la camara sigue ese cuerpo. Si no, observa el
+    // centro del sistema completo.
+    if (simulation.focusedBody >= 0) {
+      camera.target = bodyPositions[simulation.focusedBody];
+    } else {
+      camera.target = glm::vec3(0.0f);
+    }
+
+    glm::vec3 cameraPos = calculate_camera_position(camera);
     float aspect =
         static_cast<float>(gWindowWidth) / static_cast<float>(gWindowHeight);
     glm::mat4 projection =
         glm::perspective(glm::radians(45.0f), aspect, 0.1f, 120.0f);
     glm::mat4 view =
-        glm::lookAt(cameraPos, glm::vec3(0.0f), glm::vec3(0.0f, 1.0f, 0.0f));
+        glm::lookAt(cameraPos, camera.target, glm::vec3(0.0f, 1.0f, 0.0f));
 
     glClearColor(0.01f, 0.01f, 0.04f, 1.0f);
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
@@ -209,40 +397,30 @@ int main() {
     draw_mesh(sphereMesh);
     glDepthMask(GL_TRUE);
 
-    shader.setBool("useTexture", false);
-    shader.setBool("useLighting", false);
-    shader.setVec3("baseColor", orbitColor.x, orbitColor.y, orbitColor.z);
-    shader.setFloat("alpha", 0.65f);
+    if (simulation.showOrbits) {
+      shader.setBool("useTexture", false);
+      shader.setBool("useLighting", false);
+      shader.setVec3("baseColor", orbitColor.x, orbitColor.y, orbitColor.z);
+      shader.setFloat("alpha", 0.65f);
 
-    for (const CelestialBody &body : bodies) {
-      if (!body.drawOrbit || body.orbitRadius <= 0.0f) {
-        continue;
+      for (const CelestialBody &body : bodies) {
+        if (!body.drawOrbit || body.orbitRadius <= 0.0f) {
+          continue;
+        }
+
+        glm::mat4 orbitModel =
+            glm::scale(glm::mat4(1.0f), glm::vec3(body.orbitRadius));
+        shader.setMat4("model", orbitModel);
+        draw_orbit(orbitMesh);
       }
-
-      glm::mat4 orbitModel =
-          glm::scale(glm::mat4(1.0f), glm::vec3(body.orbitRadius));
-      shader.setMat4("model", orbitModel);
-      draw_orbit(orbitMesh);
     }
 
     for (std::size_t i = 0; i < bodies.size(); ++i) {
       const CelestialBody &body = bodies[i];
-      glm::mat4 anchor =
-          body.parentIndex >= 0 ? anchors[body.parentIndex] : glm::mat4(1.0f);
-
-      if (body.orbitRadius > 0.0f) {
-        anchor = glm::rotate(anchor, time * body.orbitSpeed,
-                             glm::vec3(0.0f, 1.0f, 0.0f));
-        anchor =
-            glm::translate(anchor, glm::vec3(body.orbitRadius, 0.0f, 0.0f));
-      }
-
-      anchors[i] = anchor;
-
-      glm::mat4 model = anchor;
+      glm::mat4 model = anchors[i];
       model = glm::rotate(model, glm::radians(body.axialTilt),
                           glm::vec3(0.0f, 0.0f, 1.0f));
-      model = glm::rotate(model, time * body.selfRotationSpeed,
+      model = glm::rotate(model, simulation.timeValue * body.selfRotationSpeed,
                           glm::vec3(0.0f, 1.0f, 0.0f));
       model = glm::scale(model, glm::vec3(body.radius));
 
@@ -254,12 +432,12 @@ int main() {
       draw_mesh(sphereMesh);
 
       if (body.name == "Saturn") {
-        glm::mat4 ringModel = anchor;
+        glm::mat4 ringModel = anchors[i];
         ringModel = glm::rotate(ringModel, glm::radians(body.axialTilt),
                                 glm::vec3(0.0f, 0.0f, 1.0f));
-        ringModel =
-            glm::rotate(ringModel, time * body.selfRotationSpeed * 0.35f,
-                        glm::vec3(0.0f, 1.0f, 0.0f));
+        ringModel = glm::rotate(
+            ringModel, simulation.timeValue * body.selfRotationSpeed * 0.35f,
+            glm::vec3(0.0f, 1.0f, 0.0f));
         ringModel = glm::scale(ringModel, glm::vec3(body.radius));
 
         shader.setBool("useLighting", false);
@@ -300,6 +478,24 @@ void framebuffer_size_callback(GLFWwindow *window, int width, int height) {
   gWindowWidth = width;
   gWindowHeight = height > 0 ? height : 1;
   glViewport(0, 0, width, height);
+}
+
+// Posicion de camara
+// Convierte yaw, pitch y distancia en una posicion 3D real alrededor del punto
+// que se esta observando. Asi la camara siempre orbita el objetivo actual.
+glm::vec3 calculate_camera_position(const CameraState &camera) {
+  float cosPitch = std::cos(camera.pitch);
+  return camera.target +
+         glm::vec3(camera.distance * std::sin(camera.yaw) * cosPitch,
+                   camera.distance * std::sin(camera.pitch),
+                   camera.distance * std::cos(camera.yaw) * cosPitch);
+}
+
+// Extraer traslacion
+// Cada anchor guarda rotacion y traslacion. Aqui solo tomamos la posicion final
+// del cuerpo para poder enfocar la camara o reutilizar el dato luego.
+glm::vec3 extract_translation(const glm::mat4 &transform) {
+  return glm::vec3(transform[3][0], transform[3][1], transform[3][2]);
 }
 
 unsigned int load_texture(const std::string &texturePath) {
