@@ -49,7 +49,7 @@ struct OrbitMesh {
 // Cada objeto de esta estructura define todo lo importante de un cuerpo: su
 // tamano visual, su distancia orbital, sus velocidades, su inclinacion y la
 // textura que se le aplica.
-// parentIndex = -1 significa que el cuerpo orbita el origen (el Sol).
+// parentIndex = -1 significa que el cuerpo orbita directamente al Sol.
 // Si apunta a otro cuerpo, la orbita se calcula respecto a ese padre.
 struct CelestialBody {
   std::string name;
@@ -93,6 +93,7 @@ int gWindowHeight = static_cast<int>(SCR_HEIGHT);
 void framebuffer_size_callback(GLFWwindow *window, int width, int height);
 unsigned int load_texture(const std::string &texturePath);
 Mesh create_sphere_mesh(unsigned int sectors, unsigned int stacks);
+Mesh create_quad_mesh();
 Mesh create_ring_mesh(unsigned int segments, float innerRadius,
                       float outerRadius);
 OrbitMesh create_orbit_mesh(unsigned int segments);
@@ -152,10 +153,12 @@ int main() {
   stbi_set_flip_vertically_on_load(true);
 
   Mesh sphereMesh = create_sphere_mesh(64, 32);
+  Mesh quadMesh = create_quad_mesh();
   Mesh ringMesh = create_ring_mesh(96, 1.25f, 1.95f);
   OrbitMesh orbitMesh = create_orbit_mesh(180);
 
   upload_mesh(sphereMesh);
+  upload_mesh(quadMesh);
   upload_mesh(ringMesh);
   upload_orbit_mesh(orbitMesh);
 
@@ -171,6 +174,7 @@ int main() {
   unsigned int neptuneTexture = load_texture("res/Texture/neptune.jpg");
   unsigned int saturnRingTexture = load_texture("res/Texture/saturn_ring.png");
   unsigned int starsTexture = load_texture("res/Texture/stars.jpg");
+  unsigned int galacticCoreTexture = load_texture("res/Texture/galactic.png");
 
   Shader shader("res/Shader/vertexShader.glsl",
                 "res/Shader/fragmentShader.glsl");
@@ -178,7 +182,7 @@ int main() {
   shader.setInt("diffuseTexture", 0);
 
   std::vector<CelestialBody> bodies = {
-      {"Sun", 2.40f, 0.0f, 0.0f, 0.20f, 7.0f, sunTexture, -1, false},
+      {"Sun", 2.40f, 0.0f, 0.0f, 0.20f, 7.25f, sunTexture, -1, false},
       {"Mercury", 0.28f, 4.0f, 1.60f, 0.40f, 2.0f, mercuryTexture, -1, true},
       {"Venus", 0.42f, 5.6f, 1.20f, 0.18f, 177.0f, venusTexture, -1, true},
       {"Earth", 0.45f, 7.3f, 1.00f, 0.90f, 23.5f, earthTexture, -1, true},
@@ -190,13 +194,16 @@ int main() {
       {"Neptune", 0.70f, 22.4f, 0.18f, 0.78f, 28.0f, neptuneTexture, -1, true},
   };
 
-  const glm::vec3 lightPos(0.0f, 0.0f, 0.0f);
   const glm::vec3 orbitColor(0.38f, 0.42f, 0.55f);
+  const glm::vec3 galacticOrbitColor(0.72f, 0.60f, 0.24f);
+  const float galacticCenterHeight = 45.0f;
   std::vector<glm::mat4> anchors(bodies.size(), glm::mat4(1.0f));
   std::vector<glm::vec3> bodyPositions(bodies.size(), glm::vec3(0.0f));
-  std::vector<int> focusBodies = {1, 2, 3, 5, 6, 7, 8, 9};
+  std::vector<int> focusBodies = {1, 2, 3, 5, 6, 7, 8, 9, 0};
 
-  CameraState camera = {0.0f, glm::radians(14.0f), 37.11f, glm::vec3(0.0f)};
+  const float galacticViewDistance = 72.0f;
+  CameraState camera = {0.0f, glm::radians(14.0f), galacticViewDistance,
+                        glm::vec3(0.0f)};
   const CameraState defaultCamera = camera;
   SimulationState simulation = {0.0f, 1.0f, false, true, -1};
   const SimulationState defaultSimulation = simulation;
@@ -205,11 +212,13 @@ int main() {
   const float cameraPitchSpeed = 0.95f;
   const float cameraZoomSpeed = 16.0f;
   const float minCameraDistance = 3.0f;
-  const float maxCameraDistance = 60.0f;
+  const float maxCameraDistance = 90.0f;
   const float maxPitch = glm::radians(70.0f);
   const float minPitch = glm::radians(-25.0f);
   const float minTimeScale = 0.25f;
   const float maxTimeScale = 5.0f;
+  const float galacticOrbitRadius = 34.0f;
+  const float galacticOrbitSpeed = 0.09f;
 
   bool pauseWasDown = false;
   bool orbitWasDown = false;
@@ -217,7 +226,7 @@ int main() {
   bool slowerWasDown = false;
   bool fasterWasDown = false;
   bool originWasDown = false;
-  bool focusKeyWasDown[8] = {false};
+  bool focusKeyWasDown[9] = {false};
 
   float lastFrame = static_cast<float>(glfwGetTime());
 
@@ -325,7 +334,7 @@ int main() {
     }
     if (pressed_once(GLFW_KEY_0, originWasDown)) {
       simulation.focusedBody = -1;
-      camera.distance = defaultCamera.distance;
+      camera.distance = galacticViewDistance;
     }
 
     for (std::size_t i = 0; i < focusBodies.size(); ++i) {
@@ -344,10 +353,23 @@ int main() {
     // Primero se guardan las transformaciones base de cada cuerpo para
     // reutilizar esa informacion tanto en el enfoque de camara como en el
     // render.
+    float galacticAngle = simulation.timeValue * galacticOrbitSpeed;
+    glm::vec3 sunPosition(std::cos(galacticAngle) * galacticOrbitRadius, 0.0f,
+                          std::sin(galacticAngle) * galacticOrbitRadius);
+    glm::mat4 solarSystemAnchor =
+        glm::translate(glm::mat4(1.0f), sunPosition);
+
     for (std::size_t i = 0; i < bodies.size(); ++i) {
       const CelestialBody &body = bodies[i];
-      glm::mat4 anchor =
-          body.parentIndex >= 0 ? anchors[body.parentIndex] : glm::mat4(1.0f);
+      glm::mat4 anchor = glm::mat4(1.0f);
+
+      if (i == 0) {
+        anchor = solarSystemAnchor;
+      } else if (body.parentIndex >= 0) {
+        anchor = anchors[body.parentIndex];
+      } else {
+        anchor = solarSystemAnchor;
+      }
 
       if (body.orbitRadius > 0.0f) {
         anchor = glm::rotate(anchor, simulation.timeValue * body.orbitSpeed,
@@ -382,7 +404,7 @@ int main() {
     shader.use();
     shader.setMat4("view", view);
     shader.setMat4("projection", projection);
-    shader.setVec3("lightPos", lightPos.x, lightPos.y, lightPos.z);
+    shader.setVec3("lightPos", sunPosition.x, sunPosition.y, sunPosition.z);
     shader.setVec3("viewPos", cameraPos.x, cameraPos.y, cameraPos.z);
 
     glDepthMask(GL_FALSE);
@@ -397,9 +419,34 @@ int main() {
     draw_mesh(sphereMesh);
     glDepthMask(GL_TRUE);
 
+    shader.setBool("useTexture", true);
+    shader.setBool("useLighting", false);
+    glBindTexture(GL_TEXTURE_2D, galacticCoreTexture);
+    glDepthMask(GL_FALSE);
+
+    glm::mat4 galacticCenterModel =
+        glm::translate(glm::mat4(1.0f), glm::vec3(0.0f));
+    galacticCenterModel *= glm::mat4(glm::mat3(glm::inverse(view)));
+    galacticCenterModel = glm::scale(
+        galacticCenterModel,
+        glm::vec3(galacticCenterHeight, galacticCenterHeight, 1.0f));
+    shader.setFloat("alpha", 1.0f);
+    shader.setMat4("model", galacticCenterModel);
+    draw_mesh(quadMesh);
+    glDepthMask(GL_TRUE);
+
     if (simulation.showOrbits) {
       shader.setBool("useTexture", false);
       shader.setBool("useLighting", false);
+      shader.setVec3("baseColor", galacticOrbitColor.x, galacticOrbitColor.y,
+                     galacticOrbitColor.z);
+      shader.setFloat("alpha", 0.8f);
+
+      glm::mat4 galacticOrbitModel =
+          glm::scale(glm::mat4(1.0f), glm::vec3(galacticOrbitRadius));
+      shader.setMat4("model", galacticOrbitModel);
+      draw_orbit(orbitMesh);
+
       shader.setVec3("baseColor", orbitColor.x, orbitColor.y, orbitColor.z);
       shader.setFloat("alpha", 0.65f);
 
@@ -408,8 +455,12 @@ int main() {
           continue;
         }
 
+        glm::vec3 orbitCenter =
+            body.parentIndex >= 0 ? bodyPositions[body.parentIndex]
+                                  : sunPosition;
         glm::mat4 orbitModel =
-            glm::scale(glm::mat4(1.0f), glm::vec3(body.orbitRadius));
+            glm::translate(glm::mat4(1.0f), orbitCenter);
+        orbitModel = glm::scale(orbitModel, glm::vec3(body.orbitRadius));
         shader.setMat4("model", orbitModel);
         draw_orbit(orbitMesh);
       }
@@ -452,6 +503,7 @@ int main() {
   }
 
   destroy_mesh(sphereMesh);
+  destroy_mesh(quadMesh);
   destroy_mesh(ringMesh);
   // Limpieza final: libera los buffers creados en GPU antes de cerrar.
   destroy_orbit_mesh(orbitMesh);
@@ -468,6 +520,7 @@ int main() {
   glDeleteTextures(1, &neptuneTexture);
   glDeleteTextures(1, &saturnRingTexture);
   glDeleteTextures(1, &starsTexture);
+  glDeleteTextures(1, &galacticCoreTexture);
 
   glfwDestroyWindow(window);
   glfwTerminate();
@@ -585,6 +638,18 @@ Mesh create_sphere_mesh(unsigned int sectors, unsigned int stacks) {
     }
   }
 
+  return mesh;
+}
+
+Mesh create_quad_mesh() {
+  Mesh mesh;
+  mesh.vertices = {
+      -0.5f, -0.5f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f,
+       0.5f, -0.5f, 0.0f, 0.0f, 0.0f, 1.0f, 1.0f, 0.0f,
+       0.5f,  0.5f, 0.0f, 0.0f, 0.0f, 1.0f, 1.0f, 1.0f,
+      -0.5f,  0.5f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f, 1.0f,
+  };
+  mesh.indices = {0, 1, 2, 2, 3, 0};
   return mesh;
 }
 

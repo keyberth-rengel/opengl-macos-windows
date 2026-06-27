@@ -5,6 +5,8 @@ Proyecto de OpenGL en C++ que renderiza un sistema solar 3D con texturas y camar
 ## Incluye
 
 - Sol central texturizado
+- Sistema solar completo orbitando un centro galactico virtual
+- Un solo sprite del nucleo galactico en el origen
 - 8 planetas orbitando alrededor del Sol
 - Luna orbitando la Tierra
 - Anillo de Saturno con textura propia
@@ -88,17 +90,19 @@ Si el proyecto ya tiene GLFW, GLEW y las texturas enlazadas en Visual Studio:
 - `6`: enfocar y acercar a Saturno
 - `7`: enfocar y acercar a Urano
 - `8`: enfocar y acercar a Neptuno
-- `0`: volver a la vista general
+- `9`: enfocar y acercar al Sol
+- `0`: volver a la vista general de la orbita galactica
 
 ## Que hace cada parte visual
 
-- El Sol queda en el origen y actua como referencia central de toda la escena.
+- El Sol ya no queda fijo en el origen absoluto: todo el sistema solar viaja alrededor de un centro galactico virtual siguiendo una orbita grande.
+- El origen ahora muestra un unico sprite del nucleo galactico como punto de ancla de la orbita del sistema solar.
 - Cada planeta usa una textura distinta y gira alrededor del Sol con su propia velocidad.
 - Cada planeta tambien rota sobre su propio eje para que la escena se vea viva.
 - La Luna depende de la Tierra y gira alrededor de ella.
 - Saturno dibuja el planeta y luego un anillo aparte con otra textura.
 - El fondo usa una esfera grande con textura de estrellas para cerrar la escena.
-- Las orbitas se dibujan como lineas para ayudar a leer mejor el movimiento.
+- Las orbitas planetarias se dibujan centradas en el Sol y ademas aparece una orbita galactica grande alrededor del origen.
 
 ## Donde cambiar cosas rapidamente
 
